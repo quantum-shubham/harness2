@@ -170,7 +170,7 @@ CLAUDE_MODEL = env("HARNESS2_CLAUDE_MODEL", "")
 
 # Pinned from the npm "latest" channel; releases:
 # https://www.npmjs.com/package/@earendil-works/pi-coding-agent?activeTab=versions
-PI_VERSION = "1.3.0"
+PI_VERSION = "1.4.0"
 PI_BIN = DEPENDENCIES / "pi" / "node_modules" / ".bin" / "pi"
 PI_MODEL = env("HARNESS2_PI_MODEL", SOLVER_MODEL_OC)  # same `provider/model` form as OpenCode
 
