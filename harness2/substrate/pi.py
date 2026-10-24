@@ -153,6 +153,17 @@ class PiSubstrate:
             RunRequest(task_ref=task_ref, run_ids=tuple(run_ids), timeout=int(timeout)), install
         )
 
+    def run_failed(self, stream_path: Path) -> bool:
+        """Whether the last assistant message ended in an error; pi still exits 0 then."""
+        ends = [
+            e["message"]
+            for e in read_events(Path(stream_path))
+            if e.get("type") == "message_end"
+            and isinstance(e.get("message"), dict)
+            and e["message"].get("role") == "assistant"
+        ]
+        return bool(ends) and ends[-1].get("stopReason") in ("error", "aborted")
+
     def read_trajectory(
         self, stream_path: Path, *, obs_trunc: int, max_chars: int, args_trunc: int = 2000
     ) -> str:
@@ -163,8 +174,9 @@ class PiSubstrate:
     def preflight(self) -> None:
         """Ask pi itself, without a model call, whether it can run PI_MODEL exactly.
 
-        One `--list-models` call proves Node.js, the binary, the credentials and the id: pi
-        lists only models it has auth for, and silently fuzzy-matches an id it cannot find.
+        One `--list-models` call checks Node.js, the binary, that credentials are configured
+        (present, not validated) and the exact id: pi lists only models it has auth for, and
+        silently fuzzy-matches an id it cannot find.
         """
         if not config.PI_MODEL:
             raise config.ConfigError("set HARNESS2_PI_MODEL (or HARNESS2_SOLVER_MODEL)")

@@ -240,25 +240,33 @@ class SubstrateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             LabAdapter(substrate="cc")
 
-    def test_cli_runner_stages_harness_root_and_keeps_deliverables(self):
+    def runner_cfg(self, label="l1", max_retries=1):
         task = self.root / "store/acct/t1/task_folder"
-        task.mkdir(parents=True)
+        task.mkdir(parents=True, exist_ok=True)
         (task / "TASK_INSTRUCTIONS.txt").write_text("Do it.")
         render = self.root / "render"
-        render.mkdir()
+        render.mkdir(exist_ok=True)
         (render / "CLAUDE.md").write_text("Work.")
-        cfg = jb_cli_runner.Settings(
+        (self.root / "logs").mkdir(exist_ok=True)
+        return jb_cli_runner.Settings(
             task_ids=("acct/t1",),
-            label="l1",
+            label=label,
             render_dir=render,
             tasks_base=self.root / "store",
             substrate=ClaudeSubstrate(),
             model="m",
             timeout_per_task="60",
-            max_retries=1,
+            max_retries=max_retries,
             log_dir=self.root / "logs",
         )
-        cfg.log_dir.mkdir()
+
+    def roll(self, cfg, fake_cli):
+        with patch.object(jb_opencode_runner, "TEMP_BASE", self.root / "ws"):
+            return jb_opencode_runner.run_one(
+                cfg, "acct/t1", stage=jb_cli_runner._stage, run=fake_cli
+            )
+
+    def test_cli_runner_stages_harness_root_and_keeps_deliverables(self):
         seen = []
 
         def fake_cli(cfg, workspace, traj_file, log_file, task_name, attempt):
@@ -266,13 +274,58 @@ class SubstrateTests(unittest.TestCase):
             (workspace / "output/report.txt").write_text("done")
             return 0
 
-        with patch.object(jb_opencode_runner, "TEMP_BASE", self.root / "ws"):
-            delivered = jb_opencode_runner.run_one(
-                cfg, "acct/t1", stage=jb_cli_runner._stage, run=fake_cli
-            )
-        self.assertTrue(delivered)
+        self.assertTrue(self.roll(self.runner_cfg(), fake_cli))
         self.assertEqual(seen, ["CLAUDE.md", "output", "task_folder"])
         self.assertTrue((self.root / "store/acct/t1/model_output/l1/report.txt").is_file())
+
+    def test_crashed_attempt_never_delivers_its_partial_output(self):
+        codes = iter([1, 0])  # a crash, then a clean run
+
+        def fake_cli(cfg, workspace, traj_file, log_file, task_name, attempt):
+            (workspace / f"output/attempt{attempt}.txt").write_text("x")
+            return next(codes)
+
+        self.assertTrue(self.roll(self.runner_cfg(max_retries=2), fake_cli))
+        delivered = self.root / "store/acct/t1/model_output/l1"
+        self.assertEqual([p.name for p in delivered.iterdir()], ["attempt2.txt"])
+        partials = list((self.root / "store/acct/t1/model_traj/l1").glob("*.partial"))
+        self.assertEqual([[p.name for p in d.iterdir()] for d in partials], [["attempt1.txt"]])
+
+    def test_only_a_crash_withholds_partial_output_a_timeout_still_delivers(self):
+        for code, delivered in ((1, False), (124, True)):
+            with self.subTest(code=code):
+
+                def fake_cli(cfg, workspace, traj_file, log_file, task_name, attempt):
+                    (workspace / "output/partial.txt").write_text("x")
+                    return code
+
+                self.assertEqual(self.roll(self.runner_cfg(label=f"c{code}"), fake_cli), delivered)
+
+    def test_stream_error_turns_a_zero_exit_into_a_failed_attempt(self):
+        cases = [
+            (PiSubstrate(), {"role": "assistant", "stopReason": "error"}, 1),
+            (PiSubstrate(), {"role": "assistant", "stopReason": "stop"}, 0),
+            (ClaudeSubstrate(), {"is_error": True}, 1),
+            (ClaudeSubstrate(), {"is_error": False}, 0),
+        ]
+        for sub, final, expected in cases:
+            event = (
+                {"type": "message_end", "message": final}
+                if sub.name == "pi"
+                else {"type": "result", "subtype": "success", **final}
+            )
+
+            def fake_run(argv, **kw):
+                kw["stdout"].write(json.dumps(event) + "\n")
+                return SimpleNamespace(returncode=0)
+
+            cfg = SimpleNamespace(substrate=sub, model="m", timeout_per_task="60")
+            with self.subTest(sub=sub.name, final=final):
+                with patch.object(jb_cli_runner.subprocess, "run", fake_run):
+                    code = jb_cli_runner._attempt(
+                        cfg, self.root, self.root / "t.jsonl", self.root / "log.txt", "t", 1
+                    )
+                self.assertEqual(code, expected)
 
 
 if __name__ == "__main__":

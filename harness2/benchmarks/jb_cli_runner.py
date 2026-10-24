@@ -98,7 +98,7 @@ def _attempt(
         traj_file.open("w", encoding="utf-8") as out,
         log_file.open("a", encoding="utf-8") as err,
     ):
-        return subprocess.run(
+        code = subprocess.run(
             argv,
             cwd=workspace,
             env=cfg.substrate.exec_env(os.environ, config_dir=Path(home)),
@@ -106,6 +106,8 @@ def _attempt(
             stdout=out,
             stderr=err,
         ).returncode
+    # The exit code alone misses a model error the stream reports (pi exits 0 after one).
+    return 1 if code == 0 and cfg.substrate.run_failed(traj_file) else code
 
 
 def main() -> int:

@@ -200,6 +200,11 @@ class ClaudeSubstrate:
             RunRequest(task_ref=task_ref, run_ids=tuple(run_ids), timeout=int(timeout)), install
         )
 
+    def run_failed(self, stream_path: Path) -> bool:
+        """Whether the run's final `result` event reports an error."""
+        results = [e for e in read_events(Path(stream_path)) if e.get("type") == "result"]
+        return bool(results) and bool(results[-1].get("is_error"))
+
     def read_trajectory(
         self, stream_path: Path, *, obs_trunc: int, max_chars: int, args_trunc: int = 2000
     ) -> str:

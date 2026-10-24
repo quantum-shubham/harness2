@@ -213,6 +213,9 @@ def run_one(cfg: Settings, task_id: str, *, stage=_stage, run=_attempt) -> bool:
 
     `stage` and `run` are the agent-specific steps; jb_cli_runner swaps in its own.
 
+    An attempt that exits non-zero, other than a timeout, never delivers: its partial
+    output moves beside its trajectory as `<attempt>.partial/` and the next attempt runs.
+
     True only when deliverables landed in `model_output/<label>/`. A rollout that dies
     on auth or the proxy still writes a trajectory, so the caller must not read one as
     evidence that the agent ran: `main` turns a False here into a non-zero exit, which
@@ -244,10 +247,18 @@ def run_one(cfg: Settings, task_id: str, *, stage=_stage, run=_attempt) -> bool:
         traj_file = traj_dir / f"{task_name}_{cfg.label}_attempt{attempt}_{_stamp()}.jsonl"
         _log(log_file, f"[{_hms()}] run {task_id} ({cfg.label}) attempt {attempt} -> {traj_file}")
         code = run(cfg, workspace, traj_file, log_file, task_name, attempt)
-        if _nonempty(output_dir):
-            break
         if code in (124, 137):
             _log(log_file, f"[{_hms()}] TIMEOUT {task_id} attempt {attempt}")
+        elif code != 0 and _nonempty(output_dir):
+            # A crash is not the agent's own result: keep its files for inspection, retry.
+            partial = traj_file.with_suffix(".partial")
+            shutil.move(str(output_dir), str(partial))
+            output_dir.mkdir()
+            _log(
+                log_file, f"[{_hms()}] FAILED (exit {code}) {task_id} attempt {attempt}; {partial}"
+            )
+        if _nonempty(output_dir):
+            break
 
     delivered = _nonempty(output_dir)
     if delivered:
